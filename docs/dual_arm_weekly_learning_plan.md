@@ -4,6 +4,7 @@
 > 保留原文 6 层（L0–L5）+ 4 轮螺旋迭代的骨架，新增两条原文没展开的线：
 > **MoveIt2 工程栈**（公司主力框架）和 **灵巧手**（目标形态）。
 > 人形双臂（共享腰 / 头部相机 / 多硬件组件）对 P3 的重排见 `humanoid_dual_arm_iterative_plan.md`。
+> 3 个月收窄版（单臂 MoveIt2 + 6D 姿态 → 分拣级 pick-and-place）见 `arm_12week_sorting_demo_plan.md`。
 
 ---
 
