@@ -6,6 +6,7 @@
 # Panda 示例的 RViz 配置会加载这个面板。中间件使用官方推荐的 CycloneDDS。
 # 若机器上已有旧的 ros2.list（signed-by 指向 ros-archive-keyring.gpg），会先停用它，
 # 避免和 ros2-apt-source 的内嵌公钥发生 Signed-By 冲突。
+# rosdep 默认 10–15 秒就会放弃 raw.githubusercontent.com。探测失败时改用清华、北外、中科大镜像。
 #
 # 用法:
 #   ./scripts/install_moveit.sh
@@ -255,6 +256,99 @@ require_packages() {
   fi
 }
 
+github_rosdistro_ok() {
+  local distro="$1"
+  curl -fsSL --retry 1 --max-time 20 -o /dev/null \
+    "https://raw.githubusercontent.com/ros/rosdistro/master/releases/fuerte.yaml" \
+    && curl -fsSL --retry 1 --max-time 20 -o /dev/null \
+      "https://raw.githubusercontent.com/ros/rosdistro/master/${distro}/distribution.yaml"
+}
+
+rosdep_update_with_long_timeout() {
+  python3 - <<'PY'
+import rosdistro.loader as loader
+
+_load_url = loader.load_url
+
+
+def load_url(url, retry=2, retry_period=1, timeout=45, skip_decode=False):
+    return _load_url(
+        url,
+        retry=retry,
+        retry_period=retry_period,
+        timeout=timeout,
+        skip_decode=skip_decode,
+    )
+
+
+loader.load_url = load_url
+import rosdistro
+
+rosdistro.load_url = load_url
+
+import rosdep2.gbpdistro_support as gbp
+import rosdep2.rep3 as rep3
+import rosdep2.sources_list as sources
+
+gbp.DOWNLOAD_TIMEOUT = 45
+rep3.DOWNLOAD_TIMEOUT = 45
+sources.DOWNLOAD_TIMEOUT = 45
+
+from rosdep2.main import rosdep_main
+
+rosdep_main(["update"])
+PY
+}
+
+write_rosdep_mirror_sources() {
+  local base="$1"
+  local dest=/etc/ros/rosdep/sources.list.d/20-default.list
+  local tmp
+  if [[ -f "$dest" ]] && grep -q 'raw.githubusercontent.com' "$dest"; then
+    sudo cp -a "$dest" "${dest}.github"
+  fi
+  tmp=$(mktemp)
+  cat >"$tmp" <<EOF
+# os-specific listings first
+yaml ${base}/rosdep/osx-homebrew.yaml osx
+
+# generic
+yaml ${base}/rosdep/base.yaml
+yaml ${base}/rosdep/python.yaml
+yaml ${base}/rosdep/ruby.yaml
+gbpdistro ${base}/releases/fuerte.yaml fuerte
+
+# newer distributions come from ROSDISTRO_INDEX_URL
+EOF
+  sudo cp "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
+update_rosdep() {
+  local distro="$1"
+  if github_rosdistro_ok "$distro"; then
+    log "从 GitHub 更新 rosdep"
+    if rosdep_update_with_long_timeout; then
+      return 0
+    fi
+  fi
+  log "GitHub 上的 rosdistro 下载超时，改用镜像"
+  local base
+  for base in \
+    "https://mirrors.tuna.tsinghua.edu.cn/rosdistro" \
+    "https://mirrors.bfsu.edu.cn/rosdistro" \
+    "https://mirrors.ustc.edu.cn/rosdistro"
+  do
+    log "使用 ${base}"
+    write_rosdep_mirror_sources "$base"
+    export ROSDISTRO_INDEX_URL="${base}/index-v4.yaml"
+    if rosdep_update_with_long_timeout; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 upsert_bashrc() {
   local bashrc="$HOME/.bashrc"
   local distro="$1"
@@ -262,11 +356,13 @@ upsert_bashrc() {
   touch "$bashrc"
   tmp=$(mktemp)
   if grep -Fxq "$BEGIN_MARK" "$bashrc"; then
-    awk -v begin="$BEGIN_MARK" -v end="$END_MARK" -v distro="$distro" '
+    awk -v begin="$BEGIN_MARK" -v end="$END_MARK" -v distro="$distro" \
+      -v index_url="${ROSDISTRO_INDEX_URL:-}" '
       $0 == begin {
         print begin
         print "source /opt/ros/" distro "/setup.bash"
         print "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+        if (index_url != "") print "export ROSDISTRO_INDEX_URL=" index_url
         print end
         skip = 1
         next
@@ -276,8 +372,14 @@ upsert_bashrc() {
     ' "$bashrc" >"$tmp"
   else
     cat "$bashrc" >"$tmp"
-    printf '\n%s\nsource /opt/ros/%s/setup.bash\nexport RMW_IMPLEMENTATION=rmw_cyclonedds_cpp\n%s\n' \
-      "$BEGIN_MARK" "$distro" "$END_MARK" >>"$tmp"
+    {
+      printf '\n%s\nsource /opt/ros/%s/setup.bash\nexport RMW_IMPLEMENTATION=rmw_cyclonedds_cpp\n' \
+        "$BEGIN_MARK" "$distro"
+      if [[ -n "${ROSDISTRO_INDEX_URL:-}" ]]; then
+        printf 'export ROSDISTRO_INDEX_URL=%s\n' "$ROSDISTRO_INDEX_URL"
+      fi
+      printf '%s\n' "$END_MARK"
+    } >>"$tmp"
   fi
   mv "$tmp" "$bashrc"
 }
@@ -365,7 +467,7 @@ main() {
   if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
     sudo rosdep init
   fi
-  retry rosdep update
+  update_rosdep "$distro" || die "rosdep update 失败。GitHub 和镜像都没有完成下载"
 
   log "把 ROS 2 与 CycloneDDS 写入 ${HOME}/.bashrc"
   upsert_bashrc "$distro"
