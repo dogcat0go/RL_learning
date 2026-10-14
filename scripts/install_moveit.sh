@@ -7,6 +7,7 @@
 # 若机器上已有旧的 ros2.list（signed-by 指向 ros-archive-keyring.gpg），会先停用它，
 # 避免和 ros2-apt-source 的内嵌公钥发生 Signed-By 冲突。
 # rosdep 默认 10–15 秒就会放弃 raw.githubusercontent.com。探测失败时改用清华、北外、中科大镜像。
+# 代理来自 --proxy、环境变量、~/.bashrc 或 git config。sudo 会丢掉环境变量，因此 apt 单独传入代理。
 #
 # 用法:
 #   ./scripts/install_moveit.sh
@@ -47,7 +48,7 @@ retry() {
 
 usage() {
   cat <<'EOF'
-用法: scripts/install_moveit.sh [--distro <name>]
+用法: scripts/install_moveit.sh [--distro <name>] [--proxy <url>]
 
 安装 ROS 2 与 MoveIt 2 官方二进制包。未指定发行版时按 Ubuntu 版本选择:
   22.04 → humble
@@ -56,6 +57,10 @@ usage() {
 
 24.04 可额外指定 kilted，26.04 可额外指定 rolling。
 环境变量 ROS_DISTRO 与 --distro 作用相同，命令行优先。
+
+--proxy 让 apt、curl 和 rosdep 走该代理，例如:
+  ./scripts/install_moveit.sh --proxy http://127.0.0.1:7890
+未指定时依次查看 https_proxy、http_proxy、all_proxy、~/.bashrc 和 git config --global http.proxy。
 EOF
 }
 
@@ -86,10 +91,98 @@ distro_matches_ubuntu() {
   esac
 }
 
+PROXY_URL=""
+APT_PROXY_WARNED=0
+
+read_proxy_from_rc() {
+  local file line key value http="" https=""
+  for file in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile"; do
+    [[ -f "$file" ]] || continue
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(https_proxy|HTTPS_PROXY|http_proxy|HTTP_PROXY)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+      key="${BASH_REMATCH[2]}"
+      value="${BASH_REMATCH[3]}"
+      value="${value%%#*}"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      value="${value#\"}"
+      value="${value%\"}"
+      value="${value#\'}"
+      value="${value%\'}"
+      case "$key" in
+        https_proxy | HTTPS_PROXY) https="$value" ;;
+        *) http="$value" ;;
+      esac
+    done <"$file"
+  done
+  if [[ -n "$https" ]]; then
+    printf '%s\n' "$https"
+  elif [[ -n "$http" ]]; then
+    printf '%s\n' "$http"
+  fi
+}
+
+apply_proxy() {
+  local found=""
+  if [[ -n "$PROXY_URL" ]]; then
+    found="$PROXY_URL"
+  elif [[ -n "${https_proxy:-${HTTPS_PROXY:-}}" ]]; then
+    found="${https_proxy:-$HTTPS_PROXY}"
+  elif [[ -n "${http_proxy:-${HTTP_PROXY:-}}" ]]; then
+    found="${http_proxy:-$HTTP_PROXY}"
+  elif [[ -n "${all_proxy:-${ALL_PROXY:-}}" ]]; then
+    found="${all_proxy:-$ALL_PROXY}"
+  else
+    found=$(read_proxy_from_rc || true)
+  fi
+  if [[ -z "$found" ]] && command -v git >/dev/null 2>&1; then
+    found=$(git config --global --get http.proxy 2>/dev/null || true)
+    if [[ -z "$found" ]]; then
+      found=$(git config --global --get https.proxy 2>/dev/null || true)
+    fi
+  fi
+  if [[ -z "$found" ]]; then
+    log "未检测到代理。若只有浏览器能打开 GitHub，请追加 --proxy http://127.0.0.1:7890"
+    return 0
+  fi
+  PROXY_URL="$found"
+  export http_proxy="$found" https_proxy="$found" HTTP_PROXY="$found" HTTPS_PROXY="$found"
+  case "$found" in
+    socks*) export all_proxy="$found" ALL_PROXY="$found" ;;
+  esac
+  export no_proxy="${no_proxy:-localhost,127.0.0.1}"
+  export NO_PROXY="${NO_PROXY:-$no_proxy}"
+  log "网络访问使用代理 ${found}"
+}
+
+curl_via_proxy() {
+  if [[ -n "${https_proxy:-}" ]]; then
+    curl --proxy "$https_proxy" "$@"
+  else
+    curl "$@"
+  fi
+}
+
 apt_get() {
+  local -a opts=()
+  local proxy="${https_proxy:-}"
+  if [[ -n "$proxy" ]]; then
+    case "$proxy" in
+      socks*)
+        if [[ "$APT_PROXY_WARNED" -eq 0 ]]; then
+          log "apt 只接受 http 代理，当前是 ${proxy}。软件包安装仍直连；curl 和 rosdep 会使用该代理"
+          APT_PROXY_WARNED=1
+        fi
+        ;;
+      *)
+        opts+=(-o "Acquire::http::Proxy=${proxy}" -o "Acquire::https::Proxy=${proxy}")
+        ;;
+    esac
+  fi
   sudo DEBIAN_FRONTEND=noninteractive apt-get \
     -o Dpkg::Options::=--force-confdef \
     -o Dpkg::Options::=--force-confold \
+    "${opts[@]}" \
     "$@"
 }
 
@@ -140,10 +233,10 @@ PY
 
 ros_apt_source_version() {
   local version
-  version=$(curl -fsSL "https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest" \
+  version=$(curl_via_proxy -fsSL "https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest" \
     | awk -F'"' '/tag_name/ { print $4; exit }') || true
   if [[ -z "$version" ]]; then
-    version=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    version=$(curl_via_proxy -fsSL -o /dev/null -w '%{url_effective}' \
       "https://github.com/ros-infrastructure/ros-apt-source/releases/latest" \
       | awk -F/ '{ print $NF }')
   fi
@@ -235,7 +328,7 @@ setup_ros_apt() {
   version=$(ros_apt_source_version)
   deb="/tmp/ros2-apt-source_${version}.${UBUNTU_CODENAME}_all.deb"
   log "配置 ROS 2 软件源（ros2-apt-source ${version}）"
-  retry curl -fL -o "$deb" \
+  retry curl_via_proxy -fL -o "$deb" \
     "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${version}/ros2-apt-source_${version}.${UBUNTU_CODENAME}_all.deb"
   move_aside_blocking_ros2_sources
   sudo dpkg -i "$deb"
@@ -258,26 +351,30 @@ require_packages() {
 
 github_rosdistro_ok() {
   local distro="$1"
-  curl -fsSL --retry 1 --max-time 20 -o /dev/null \
+  curl_via_proxy -fsSL --retry 2 --retry-all-errors --max-time 180 -o /dev/null \
     "https://raw.githubusercontent.com/ros/rosdistro/master/releases/fuerte.yaml" \
-    && curl -fsSL --retry 1 --max-time 20 -o /dev/null \
+    && curl_via_proxy -fsSL --retry 2 --retry-all-errors --max-time 180 -o /dev/null \
       "https://raw.githubusercontent.com/ros/rosdistro/master/${distro}/distribution.yaml"
 }
 
 rosdep_update_with_long_timeout() {
-  local distro="$1"
-  # apt 把 rosdistro / rosdep 装到 /usr/bin/python3。当前 PATH 里若是 conda 或 venv 的 python3，会报 No module named rosdistro。
-  set +u
-  # shellcheck disable=SC1090
-  source "/opt/ros/${distro}/setup.bash"
-  set -u
+  local distro="$1" import_error
+  # 不用 PATH 里的 python3：conda / venv 没有 apt 安装的 rosdistro。也不 source ROS，避免改掉 Python 的模块路径。
+  log "用 /usr/bin/python3 更新 rosdep（${distro}）"
+  if ! import_error=$(/usr/bin/python3 -c 'import rosdistro, rosdep2' 2>&1); then
+    log "系统 Python 找不到 rosdistro，尝试安装 python3-rosdistro"
+    apt_get install -y python3-rosdistro python3-rosdep || true
+    if ! import_error=$(/usr/bin/python3 -c 'import rosdistro, rosdep2' 2>&1); then
+      die "/usr/bin/python3 无法导入 rosdistro：${import_error}"
+    fi
+  fi
   /usr/bin/python3 - <<'PY'
 import rosdistro.loader as loader
 
 _load_url = loader.load_url
 
 
-def load_url(url, retry=2, retry_period=1, timeout=45, skip_decode=False):
+def load_url(url, retry=2, retry_period=1, timeout=180, skip_decode=False):
     return _load_url(
         url,
         retry=retry,
@@ -296,9 +393,9 @@ import rosdep2.gbpdistro_support as gbp
 import rosdep2.rep3 as rep3
 import rosdep2.sources_list as sources
 
-gbp.DOWNLOAD_TIMEOUT = 45
-rep3.DOWNLOAD_TIMEOUT = 45
-sources.DOWNLOAD_TIMEOUT = 45
+gbp.DOWNLOAD_TIMEOUT = 180
+rep3.DOWNLOAD_TIMEOUT = 180
+sources.DOWNLOAD_TIMEOUT = 180
 
 from rosdep2.main import rosdep_main
 
@@ -413,6 +510,11 @@ main() {
         requested="$2"
         shift 2
         ;;
+      --proxy)
+        [[ $# -ge 2 ]] || die "--proxy 需要代理地址，例如 http://127.0.0.1:7890"
+        PROXY_URL="$2"
+        shift 2
+        ;;
       -h | --help)
         usage
         exit 0
@@ -440,6 +542,8 @@ main() {
     sudo -v
   fi
 
+  apply_proxy
+
   # 上次安装若已留下 ros2-apt-source，先清掉旧源，否则这里的 apt update 会直接失败。
   drop_duplicate_ros2_sources
 
@@ -460,6 +564,8 @@ main() {
     "ros-${distro}-ros2-control"
     "ros-${distro}-ros2-controllers"
     "ros-${distro}-rviz-visual-tools"
+    python3-rosdistro
+    python3-rosdep
   )
   require_packages "${packages[@]}"
 
