@@ -55,7 +55,7 @@
 **W1 刚体变换 + 正运动学 + 环境搭建**
 - 学：旋转矩阵、四元数、齐次变换、SE(3)（Modern Robotics 第 3 章）；PoE 与 DH（第 4 章）；URDF 的 link / joint / 惯量 / 碰撞体。
 - 做：装 Pinocchio；取公司臂 URDF（或 UR5e / Panda）做 FK，与手算 PoE 对比；装 ROS2（与公司一致的发行版）+ MoveIt2 + gz_ros2_control，跑官方 Getting Started 与 RViz MotionPlanning 插件。
-- Gate：3 组关节角 FK 误差 < 1e-6；RViz 中能拖动目标并执行规划；**仿真环境可用**。
+- Gate：3 组关节角 FK 误差 < 1e-6；RViz 中能拖动目标并执行规划；**仿真环境可用**。逐项自检见附录 A。
 
 **W2 Jacobian、IK 与 MoveGroupInterface**
 - 学：Jacobian、奇异性、可操作度（MR 第 5 章）；数值 IK 与阻尼最小二乘（DLS）的原理，知道为什么 6 轴有解析解、7 轴需要零空间；`MoveGroupInterface` 的 `setPoseTarget` / `plan` / `execute` / `computeCartesianPath`。
@@ -171,3 +171,68 @@
 用到的旧经验（平衡车）：
 下周调整：
 ```
+
+---
+
+## 附录 A：W1 刚体变换 / 正运动学自检清单
+
+**用法**：每一项有「能口头回答」和「能跑出数字」两关，两关都过才算掌握。代码检验统一用三方互证：
+自己手写的 numpy 实现 vs `modern_robotics`（`pip install modern_robotics`）vs `scipy.spatial.transform.Rotation` / Pinocchio，
+三者一致到 1e-9。建议把所有检验写进一个 `w1_check.py`，每项一个 `assert`，全绿才算 W1 过 gate；以后遇到坐标系问题随时回来加 case。
+
+### A.1 教程
+
+| 用途 | 资源 |
+|---|---|
+| 主线 | Lynch & Park《Modern Robotics》第 3–4 章（[官网免费 PDF](https://hades.mech.northwestern.edu/index.php/Modern_Robotics)）；Coursera「Modern Robotics」第 1–2 门课或 Kevin Lynch 的 YouTube 视频（每段 5–10 min）；中文版《现代机器人学：机构、规划与控制》对照 |
+| 标准答案 | `modern_robotics` 代码库：`MatrixExp3` / `MatrixExp6` / `MatrixLog6` / `FKinSpace` / `FKinBody` |
+| 中文入门 | 台大林沛群《机器人学》第 2–4 讲（先看一遍建立画面感再读 MR） |
+| DH 补充 | Craig《机器人学导论》第 2–3 章（MR 以 PoE 为主，DH 只在附录；厂家手册多用 DH） |
+| 直觉 | 3Blue1Brown「线性代数的本质」第 3、4、13 章；Ben Eater × 3Blue1Brown [交互式四元数](https://eater.net/quaternions)；MR 附录 B |
+| 工具 | Pinocchio 前两个 tutorial notebook、`pin.SE3` / `pin.exp6` / `pin.log6`；`scipy.spatial.transform.Rotation` 文档；ROS2 tf2 tutorials 的 Introduction 与 Quaternion Fundamentals |
+
+### A.2 逐项检验
+
+**1. 旋转矩阵**
+- 问：R 的 9 个元素为什么只有 3 个自由度，约束是什么（RᵀR = I，det R = +1）？R 的列向量的物理含义？ᵃRᵦ 中哪个是参考系哪个是物体系？
+- 跑：随机生成 R，验证 ‖RᵀR − I‖ 与 |det R − 1| < 1e-12；验证 R⁻¹ = Rᵀ；手写 Rx / Ry / Rz，与 `Rotation.from_euler` 对比。
+- 陷阱：ZYX 欧拉角 (α, β, γ) 的矩阵是 Rz(α)Ry(β)Rx(γ) 还是反过来？用 scipy 的 `'ZYX'`（内旋，大写）和 `'zyx'`（外旋，小写）各算一次，解释差异。
+
+**2. 四元数**
+- 问：单位四元数与旋转矩阵是几对一（q 与 −q）？为什么插值用 slerp 而不是线性插值？q₁q₂ 对应先转哪个？
+- 跑：q → R → q 往返误差 < 1e-12（允许差一个符号）；手写四元数乘法，与 `Rotation.__mul__` 对比；slerp 中点到两端的旋转角相等。
+- 陷阱：ROS 消息的 `(x, y, z, w)` 用 Eigen `Quaterniond` 构造时参数顺序是 `(w, x, y, z)`，一次写对。
+
+**3. 齐次变换与 SE(3)**
+- 问：T⁻¹ 的闭式解 [Rᵀ, −Rᵀp]？ᵃTc = ᵃTb · ᵇTc 的「下标消去」规则？变换点与变换自由向量（速度、力）的区别？
+- 跑：手写 `inv(T)` 与 `np.linalg.inv` 对比；三级链 ᵃTd = ᵃTb·ᵇTc·ᶜTd 与 Pinocchio 或 `tf2_echo` 一致。
+- 陷阱：已知 ᵃTb 与 pᵇ 求 pᵃ；反过来已知 pᵃ 求 pᵇ。两个都一次写对。
+
+**4. 指数坐标、旋量、exp / log**
+- 问：[ω] 是什么？Rodrigues 公式三项各代表什么？旋量 S = (ω, v) 的 v 为什么不是「平移速度」？ω = 0 时 exp 退化成什么？
+- 跑：手写 Rodrigues 与 `scipy.linalg.expm([ω]θ)`、`mr.MatrixExp3` 对比；`pin.log6(pin.exp6(ξ))` 与 ξ 一致；绕 z 转 θ 后取 log，ω 应为 (0, 0, θ)。
+- 陷阱：θ = π 附近 log 的数值问题，自己触发一次。
+
+**5. PoE 正运动学**
+- 问：空间形式 T = e^{[S₁]θ₁}…e^{[Sₙ]θₙ} M 与物体形式 T = M e^{[B₁]θ₁}…e^{[Bₙ]θₙ} 的区别？Sᵢ 怎么从零位的关节轴位置和方向算出？M 是什么？
+- 跑：对 UR5e（MR 第 4 章有现成 S 列表与 M）手写 PoE FK，与 `mr.FKinSpace` 对比 < 1e-9；再与 Pinocchio 加载 UR5e URDF 的 FK 对比 < 1e-6（即 W1 gate）。
+- 陷阱：把某个关节的 ω 反向，看 FK 怎么错；把 M 的平移改错，看哪些位形下误差才暴露。
+
+**6. DH 参数**
+- 问：(a, α, d, θ) 各绕 / 沿哪个轴？标准 DH 与改进 DH（Craig）的差别？为什么 DH 对平行轴病态而 PoE 没有这个问题？
+- 跑：用厂家手册的 DH 表（UR 官网有 UR5e）手写 DH FK，与第 5 项的 PoE FK 一致；再从 DH 表反推出 PoE 的 S 与 M。
+- 陷阱：分清手册用的是标准还是改进 DH，用错一种结果差多少。
+
+**7. URDF**
+- 问：`<joint>` 的 `<origin>` 是父 link 系到子 link 系的变换还是反过来？`<axis>` 在哪个系下表示？`<inertial>` 的 origin 相对哪个系？`<visual>` 与 `<collision>` 可以不同吗？
+- 跑：Pinocchio 加载 URDF，打印每个 joint 的 `placement`，手工串起来与 `framesForwardKinematics` 一致；`check_urdf` 与 `urdf_to_graphviz` 看树结构。
+- 陷阱：把某个 joint 的 axis 从 (0, 0, 1) 改成 (0, 0, −1)，先预测哪些位形下末端差多少，再运行验证。
+
+### A.3 时间分配与过关标准
+
+| 项 | 建议时间 | 过关 |
+|---|---|---|
+| 1–2 旋转矩阵、四元数 | 1.5 天 | 三方互证全部 < 1e-12；陷阱题各答对 |
+| 3–4 齐次变换、exp / log | 1.5 天 | 同上；能不看书写出 T⁻¹ 与 Rodrigues |
+| 5–6 PoE、DH | 2 天 | UR5e 两种 FK 与 Pinocchio 一致 < 1e-6 |
+| 7 URDF + 环境搭建 | 2 天 | Pinocchio 加载公司 URDF；RViz 规划执行跑通 |
