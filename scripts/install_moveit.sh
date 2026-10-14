@@ -265,7 +265,13 @@ github_rosdistro_ok() {
 }
 
 rosdep_update_with_long_timeout() {
-  python3 - <<'PY'
+  local distro="$1"
+  # apt 把 rosdistro / rosdep 装到 /usr/bin/python3。当前 PATH 里若是 conda 或 venv 的 python3，会报 No module named rosdistro。
+  set +u
+  # shellcheck disable=SC1090
+  source "/opt/ros/${distro}/setup.bash"
+  set -u
+  /usr/bin/python3 - <<'PY'
 import rosdistro.loader as loader
 
 _load_url = loader.load_url
@@ -328,7 +334,7 @@ update_rosdep() {
   local distro="$1"
   if github_rosdistro_ok "$distro"; then
     log "从 GitHub 更新 rosdep"
-    if rosdep_update_with_long_timeout; then
+    if rosdep_update_with_long_timeout "$distro"; then
       return 0
     fi
   fi
@@ -342,7 +348,7 @@ update_rosdep() {
     log "使用 ${base}"
     write_rosdep_mirror_sources "$base"
     export ROSDISTRO_INDEX_URL="${base}/index-v4.yaml"
-    if rosdep_update_with_long_timeout; then
+    if rosdep_update_with_long_timeout "$distro"; then
       return 0
     fi
   done
