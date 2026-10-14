@@ -2,7 +2,8 @@
 # MoveIt 2 一键安装（官方二进制）。
 #
 # 按 Ubuntu 版本选择 ROS 2 发行版并安装 MoveIt 2、RViz、Panda 示例和
-# ros2_control（示例用 mock 硬件执行轨迹）。中间件使用官方推荐的 CycloneDDS。
+# ros2_control（示例用 mock 硬件执行轨迹）。同时安装 rviz_visual_tools，
+# Panda 示例的 RViz 配置会加载这个面板。中间件使用官方推荐的 CycloneDDS。
 #
 # 用法:
 #   ./scripts/install_moveit.sh
@@ -264,6 +265,7 @@ main() {
     "ros-${distro}-rmw-cyclonedds-cpp"
     "ros-${distro}-ros2-control"
     "ros-${distro}-ros2-controllers"
+    "ros-${distro}-rviz-visual-tools"
   )
   require_packages "${packages[@]}"
 
