@@ -4,6 +4,8 @@
 # 按 Ubuntu 版本选择 ROS 2 发行版并安装 MoveIt 2、RViz、Panda 示例和
 # ros2_control（示例用 mock 硬件执行轨迹）。同时安装 rviz_visual_tools，
 # Panda 示例的 RViz 配置会加载这个面板。中间件使用官方推荐的 CycloneDDS。
+# 若机器上已有旧的 ros2.list（signed-by 指向 ros-archive-keyring.gpg），会先停用它，
+# 避免和 ros2-apt-source 的内嵌公钥发生 Signed-By 冲突。
 #
 # 用法:
 #   ./scripts/install_moveit.sh
@@ -148,6 +150,85 @@ ros_apt_source_version() {
   printf '%s\n' "$version"
 }
 
+move_aside_blocking_ros2_sources() {
+  local path=/etc/apt/sources.list.d/ros2.sources
+  local shipped=/usr/share/ros-apt-source/ros2.sources
+  local current="" expected=""
+  [[ -e "$path" || -L "$path" ]] || return 0
+  if [[ -L "$path" ]]; then
+    current=$(readlink -f "$path" || true)
+    expected=$(readlink -f "$shipped" 2>/dev/null || true)
+    if [[ -n "$expected" && "$current" == "$expected" ]]; then
+      return 0
+    fi
+  fi
+  log "移开 ${path}，改由 ros2-apt-source 提供软件源"
+  sudo mv -f "$path" "${path}.disabled-by-install-moveit"
+}
+
+drop_duplicate_ros2_sources() {
+  local path=/etc/apt/sources.list.d/ros2.sources
+  [[ -e "$path" || -L "$path" ]] || return 0
+  local removed
+  removed=$(sudo python3 - <<'PY'
+import os
+from pathlib import Path
+
+URI = "packages.ros.org/ros2/ubuntu"
+canonical = Path("/etc/apt/sources.list.d/ros2.sources")
+candidates = [Path("/etc/apt/sources.list")]
+sources_dir = Path("/etc/apt/sources.list.d")
+if sources_dir.is_dir():
+    candidates.extend(sorted(sources_dir.iterdir()))
+
+def is_canonical(path: Path) -> bool:
+    try:
+        return path.exists() and canonical.exists() and path.resolve() == canonical.resolve()
+    except OSError:
+        return False
+
+def meaningful(text: str) -> bool:
+    return any(line.strip() and not line.strip().startswith("#") for line in text.splitlines())
+
+def backup_name(path: Path) -> Path:
+    dest = Path(str(path) + ".disabled-by-install-moveit")
+    if dest.exists() or dest.is_symlink():
+        dest.unlink()
+    return dest
+
+for path in candidates:
+    if not path.is_file() or is_canonical(path):
+        continue
+    name = path.name
+    apt_owned = path == Path("/etc/apt/sources.list") or name.endswith(".list") or name.endswith(".sources")
+    if not apt_owned:
+        continue
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if URI not in text:
+        continue
+    if name.endswith(".sources"):
+        kept = [stanza for stanza in text.split("\n\n") if URI not in stanza]
+        new = "\n\n".join(part.strip("\n") for part in kept if part.strip()).strip()
+        if new:
+            new += "\n"
+    else:
+        new = "".join(line for line in text.splitlines(keepends=True) if URI not in line)
+    dest = backup_name(path)
+    if meaningful(new):
+        dest.write_bytes(path.read_bytes())
+        path.write_text(new, encoding="utf-8")
+        print(f"edited {path}")
+    else:
+        os.replace(path, dest)
+        print(f"disabled {path}")
+PY
+)
+  if [[ -n "$removed" ]]; then
+    log "已停用与 ros2-apt-source 冲突的旧 ROS 2 软件源"
+    printf '%s\n' "$removed"
+  fi
+}
+
 setup_ros_apt() {
   local version deb
   version=$(ros_apt_source_version)
@@ -155,8 +236,10 @@ setup_ros_apt() {
   log "配置 ROS 2 软件源（ros2-apt-source ${version}）"
   retry curl -fL -o "$deb" \
     "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${version}/ros2-apt-source_${version}.${UBUNTU_CODENAME}_all.deb"
+  move_aside_blocking_ros2_sources
   sudo dpkg -i "$deb"
   rm -f "$deb"
+  drop_duplicate_ros2_sources
 }
 
 require_packages() {
@@ -249,6 +332,9 @@ main() {
     sudo -v
   fi
 
+  # 上次安装若已留下 ros2-apt-source，先清掉旧源，否则这里的 apt update 会直接失败。
+  drop_duplicate_ros2_sources
+
   log "Ubuntu ${UBUNTU_VERSION}，安装 ROS 2 ${distro} 与 MoveIt 2"
   ensure_utf8
   ensure_ubuntu_suites "$UBUNTU_CODENAME"
@@ -297,4 +383,6 @@ main() {
 EOF
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
