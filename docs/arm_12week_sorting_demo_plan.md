@@ -187,7 +187,7 @@
 | 主线 | Lynch & Park《Modern Robotics》第 3–4 章（[官网免费 PDF](https://hades.mech.northwestern.edu/index.php/Modern_Robotics)）；Coursera「Modern Robotics」第 1–2 门课或 Kevin Lynch 的 YouTube 视频（每段 5–10 min）；中文版《现代机器人学：机构、规划与控制》对照 |
 | 标准答案 | `modern_robotics` 代码库：`MatrixExp3` / `MatrixExp6` / `MatrixLog6` / `FKinSpace` / `FKinBody` |
 | 中文入门 | 台大林沛群《机器人学》第 2–4 讲（先看一遍建立画面感再读 MR） |
-| DH 补充 | Craig《机器人学导论》第 2–3 章（MR 以 PoE 为主，DH 只在附录；厂家手册多用 DH） |
+| DH 补充 | Craig《机器人学导论》第 2–3 章（MR 以 PoE 为主，DH 只在附录；厂家手册多用 DH）；本仓库交互教程 `dh_tutorial.html`（标准 / 改进 DH、UR5e 实例、可拖动 FK） |
 | 直觉 | 3Blue1Brown「线性代数的本质」第 3、4、13 章；Ben Eater × 3Blue1Brown [交互式四元数](https://eater.net/quaternions)；MR 附录 B |
 | 工具 | Pinocchio 前两个 tutorial notebook、`pin.SE3` / `pin.exp6` / `pin.log6`；`scipy.spatial.transform.Rotation` 文档；ROS2 tf2 tutorials 的 Introduction 与 Quaternion Fundamentals |
 

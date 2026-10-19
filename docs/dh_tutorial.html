@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>机械臂 DH 参数教程</title>
+<style>
+:root{--bg:#fff;--fg:#1f2328;--muted:#656d76;--card:#f6f8fa;--line:#d0d7de;--accent:#0969da;--warn:#bc4c00;--ok:#1a7f37;--x:#d1242f;--y:#1a7f37;--z:#0969da}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--card:#161b22;--line:#30363d;--accent:#58a6ff;--warn:#f0883e;--ok:#3fb950;--x:#ff7b72;--y:#3fb950;--z:#58a6ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.75 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+header{padding:32px 20px 8px;max-width:880px;margin:auto}
+header h1{margin:0 0 6px;font-size:28px}
+header p{margin:0;color:var(--muted)}
+nav{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);z-index:5}
+nav div{max-width:880px;margin:auto;padding:8px 20px;display:flex;gap:14px;flex-wrap:wrap;font-size:14px}
+nav a{color:var(--accent);text-decoration:none}
+main{max-width:880px;margin:auto;padding:8px 20px 80px}
+h2{margin-top:44px;padding-bottom:6px;border-bottom:1px solid var(--line);font-size:22px}
+h3{margin-top:26px;font-size:18px}
+code{background:var(--card);padding:1px 6px;border-radius:4px;font-size:.92em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 18px;margin:16px 0}
+.card.warn{border-left:4px solid var(--warn)}
+.card.ok{border-left:4px solid var(--ok)}
+.card.note{border-left:4px solid var(--accent)}
+.card b.t{display:block;margin-bottom:2px}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:15px}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+td.n,th.n{text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre.m{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;overflow:auto;font:14px/1.5 ui-monospace,Menlo,Consolas,monospace}
+.x{color:var(--x);font-weight:600}.y{color:var(--y);font-weight:600}.z{color:var(--z);font-weight:600}
+ol.steps>li{margin:8px 0}
+.demo{border:1px solid var(--line);border-radius:10px;padding:16px;margin:18px 0}
+.demo .row{display:flex;gap:18px;flex-wrap:wrap}
+.demo canvas{background:var(--card);border:1px solid var(--line);border-radius:8px;max-width:100%;touch-action:none;cursor:grab}
+.ctl{flex:1;min-width:260px}
+.ctl label{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+.ctl label span.v{width:64px;text-align:right;font-family:ui-monospace,monospace}
+.ctl input[type=range]{flex:1}
+select,button{font:inherit;padding:4px 10px;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:6px}
+button{cursor:pointer}
+details{margin:10px 0}
+summary{cursor:pointer;color:var(--accent)}
+.legend span{margin-right:14px;font-size:14px}
+</style>
+</head>
+<body>
+<header>
+  <h1>机械臂 DH 参数教程</h1>
+  <p>从「为什么要 DH」到「手里拿着厂家手册能算出 FK」。配套 12 周计划附录 A 第 6 项。</p>
+</header>
+<nav><div>
+  <a href="#why">1 为什么</a><a href="#std">2 标准 DH</a><a href="#build">3 建表步骤</a><a href="#mod">4 改进 DH</a>
+  <a href="#cmp">5 对比</a><a href="#ur5e">6 UR5e 实例</a><a href="#demo">7 交互</a><a href="#pit">8 常见坑</a><a href="#poe">9 与 PoE/URDF</a><a href="#check">10 自检</a>
+</div></nav>
+<main>
+
+<h2 id="why">1 为什么需要 DH</h2>
+<p>串联机械臂的 FK 就是把每个关节的相对变换连乘：<code>⁰Tₙ = ⁰T₁ · ¹T₂ · … · ⁿ⁻¹Tₙ</code>。
+一个一般的刚体变换有 6 个自由度，但相邻两个关节轴之间只要<b>按约定摆放坐标系</b>，就能用 <b>4 个参数</b>描述，其中 1 个是关节变量（转动关节是 θ，移动关节是 d），另外 3 个是由结构决定的常数。</p>
+<div class="card note"><b class="t">一句话</b>DH = 一套「如何给每个连杆放坐标系」的约定 + 每个关节 4 个参数 (θ, d, a, α)。参数怎么定义取决于约定，所以<b>拿到 DH 表必须先确认是标准 DH 还是改进 DH</b>。</div>
+
+<h2 id="std">2 标准 DH（Denavit–Hartenberg，Siciliano / UR 手册常用）</h2>
+<p>关节 <i>i</i> 连接连杆 <i>i−1</i> 与连杆 <i>i</i>。约定：<b>坐标系 {i} 固连在连杆 i 上，<span class="z">zᵢ₋₁</span> 沿关节 i 的轴线</b>（所以 {i−1} 的 z 轴是第 i 个关节轴，这是标准 DH 最容易记混的一点）。</p>
+
+<h3>坐标系规则</h3>
+<ol class="steps">
+<li><span class="z">zᵢ₋₁</span> 沿关节 <i>i</i> 的轴线（转动关节取转轴方向，移动关节取移动方向）。</li>
+<li><span class="x">xᵢ</span> 沿 zᵢ₋₁ 与 zᵢ 的<b>公垂线</b>，方向从 zᵢ₋₁ 指向 zᵢ。两轴相交时 xᵢ = zᵢ₋₁ × zᵢ（正负任选，保持一致）；两轴平行时公垂线不唯一，任选一条，通常选使参数为 0 的那条。</li>
+<li><span class="y">yᵢ</span> 由右手定则补全。</li>
+<li>原点 Oᵢ 在 xᵢ 与 zᵢ 的交点（若 zᵢ 与 xᵢ 不相交，则取使后续参数为 0 的位置）。</li>
+</ol>
+
+<h3>四个参数</h3>
+<table>
+<tr><th>参数</th><th>定义（从 {i−1} 到 {i}）</th><th>关节 i 是转动时</th><th>性质</th></tr>
+<tr><td class="n">θᵢ</td><td>绕 <span class="z">zᵢ₋₁</span>，从 <span class="x">xᵢ₋₁</span> 转到 <span class="x">xᵢ</span> 的角度</td><td><b>变量</b>（零位偏置记为 θᵢ⁰）</td><td>关节角</td></tr>
+<tr><td class="n">dᵢ</td><td>沿 <span class="z">zᵢ₋₁</span>，从 xᵢ₋₁ 与 zᵢ₋₁ 的交点到 xᵢ 与 zᵢ₋₁ 交点的距离</td><td>常数（移动关节时是变量）</td><td>连杆偏置</td></tr>
+<tr><td class="n">aᵢ</td><td>沿 <span class="x">xᵢ</span>，从 Oᵢ 与 zᵢ₋₁ 的交点到 Oᵢ 的距离（公垂线长度）</td><td>常数</td><td>连杆长度</td></tr>
+<tr><td class="n">αᵢ</td><td>绕 <span class="x">xᵢ</span>，从 <span class="z">zᵢ₋₁</span> 转到 <span class="z">zᵢ</span> 的角度</td><td>常数</td><td>连杆扭角</td></tr>
+</table>
+
+<h3>变换矩阵</h3>
+<p>依次做 4 个基本变换：先绕 z 转 θ，再沿 z 移 d，再沿（新的）x 移 a，最后绕（新的）x 转 α：</p>
+<pre class="m">ⁱ⁻¹Tᵢ = Rz(θᵢ) · Tz(dᵢ) · Tx(aᵢ) · Rx(αᵢ)
+
+        ⎡ cosθ   −sinθ·cosα    sinθ·sinα    a·cosθ ⎤
+      = ⎢ sinθ    cosθ·cosα   −cosθ·sinα    a·sinθ ⎥
+        ⎢  0         sinα          cosα         d    ⎥
+        ⎣  0          0             0           1    ⎦      （θ=θᵢ, d=dᵢ, a=aᵢ, α=αᵢ）</pre>
+<div class="card ok"><b class="t">记忆法</b>左上 3×3 = Rz(θ)·Rx(α)；右列 = (a·cosθ, a·sinθ, d)。θ 只出现在「绕 z」里，α 只出现在「绕 x」里，其余都是常数。</div>
+
+<h2 id="build">3 给一台机械臂建 DH 表的步骤</h2>
+<ol class="steps">
+<li>画出机械臂<b>零位</b>（所有关节角=0 的姿态）的线框图，标出每个关节轴 z₀…zₙ₋₁（注意：第 i 个关节轴 = zᵢ₋₁）。</li>
+<li>基座系 {0}：z₀ 沿关节 1 轴，x₀ 任选，通常与世界系对齐。</li>
+<li>逐个关节找公垂线，放 x₁ … xₙ₋₁，原点放在 x 与 z 交点。</li>
+<li>末端系 {n}：zₙ 取接近方向（approach），xₙ 垂直于 zₙ₋₁ 并与之相交，补全 yₙ。</li>
+<li>对每个 i，按上表读出 θᵢ、dᵢ、aᵢ、αᵢ，填表。<b>零位时 θᵢ 可能不为 0</b>（因为 x 轴是按几何放的），此时 θᵢ = qᵢ + θᵢ⁰。</li>
+<li>代入矩阵连乘，<b>用一个能手算的位形（零位、全 90°）核对</b>，再与 URDF / Pinocchio 对比。</li>
+</ol>
+<div class="card warn"><b class="t">平行轴的特殊性</b>相邻两轴平行时公垂线有无穷多条，d 与 a 可以互相「串」。DH 对此是病态的：不同人建出的表不同，但 FK 结果一致。这也是 PoE 不存在此问题的原因（见第 9 节）。</div>
+
+<h2 id="mod">4 改进 DH（Craig 约定，机器人学导论 / 部分国产臂手册）</h2>
+<p>差别在于<b>坐标系 {i} 固连在关节 i 的轴线上</b>：<span class="z">zᵢ</span> 沿关节 i 轴（不是 zᵢ₋₁），所以下标与关节一一对应，更直观。</p>
+<table>
+<tr><th>参数</th><th>定义</th></tr>
+<tr><td class="n">αᵢ₋₁</td><td>绕 <span class="x">xᵢ₋₁</span>，从 <span class="z">zᵢ₋₁</span> 转到 <span class="z">zᵢ</span></td></tr>
+<tr><td class="n">aᵢ₋₁</td><td>沿 <span class="x">xᵢ₋₁</span>，从 zᵢ₋₁ 到 zᵢ 的距离</td></tr>
+<tr><td class="n">θᵢ</td><td>绕 <span class="z">zᵢ</span>，从 xᵢ₋₁ 转到 xᵢ</td></tr>
+<tr><td class="n">dᵢ</td><td>沿 <span class="z">zᵢ</span>，从 xᵢ₋₁ 到 xᵢ 的距离</td></tr>
+</table>
+<p><b>变换顺序也变了</b>：先 x 方向的两个，再 z 方向的两个。</p>
+<pre class="m">ⁱ⁻¹Tᵢ = Rx(αᵢ₋₁) · Tx(aᵢ₋₁) · Rz(θᵢ) · Tz(dᵢ)
+
+        ⎡   cosθ          −sinθ          0        a      ⎤
+      = ⎢ sinθ·cosα      cosθ·cosα     −sinα    −sinα·d  ⎥
+        ⎢ sinθ·sinα      cosθ·sinα      cosα     cosα·d  ⎥
+        ⎣     0              0            0        1     ⎦      （θ=θᵢ, d=dᵢ, a=aᵢ₋₁, α=αᵢ₋₁）</pre>
+
+<h2 id="cmp">5 标准 DH 与改进 DH 对比</h2>
+<table>
+<tr><th></th><th>标准 DH</th><th>改进 DH（Craig）</th></tr>
+<tr><td>关节 i 的轴</td><td>zᵢ₋₁</td><td>zᵢ</td></tr>
+<tr><td>表中第 i 行参数</td><td>θᵢ dᵢ aᵢ αᵢ（同一行的 a、α 描述连杆 i）</td><td>αᵢ₋₁ aᵢ₋₁ θᵢ dᵢ（a、α 来自上一连杆）</td></tr>
+<tr><td>基本变换顺序</td><td>Rz → Tz → Tx → Rx</td><td>Rx → Tx → Rz → Tz</td></tr>
+<tr><td>末端坐标系</td><td>需额外约定，常多一个工具变换</td><td>末端系自然落在最后关节上，再接工具变换</td></tr>
+<tr><td>典型来源</td><td>Siciliano、Spong、UR 官方 DH 表</td><td>Craig、部分国产臂 / ABB 手册</td></tr>
+<tr><td>树形 / 分支结构</td><td>较麻烦</td><td>更方便（人形双臂常用）</td></tr>
+</table>
+<div class="card warn"><b class="t">别混用</b>把改进 DH 的表按标准 DH 公式代入，结果会错。判断方法：看手册表头顺序，或用一个已知位形（零位）核对末端位置。</div>
+
+<h2 id="ur5e">6 实例：UR5e 的标准 DH 表</h2>
+<p>来自 Universal Robots 官方文档（标准 DH，单位 m / rad）：</p>
+<table>
+<tr><th>关节 i</th><th class="n">θᵢ</th><th class="n">dᵢ (m)</th><th class="n">aᵢ (m)</th><th class="n">αᵢ</th></tr>
+<tr><td>1</td><td class="n">q₁</td><td class="n">0.1625</td><td class="n">0</td><td class="n">π/2</td></tr>
+<tr><td>2</td><td class="n">q₂</td><td class="n">0</td><td class="n">−0.4250</td><td class="n">0</td></tr>
+<tr><td>3</td><td class="n">q₃</td><td class="n">0</td><td class="n">−0.3922</td><td class="n">0</td></tr>
+<tr><td>4</td><td class="n">q₄</td><td class="n">0.1333</td><td class="n">0</td><td class="n">π/2</td></tr>
+<tr><td>5</td><td class="n">q₅</td><td class="n">0.0997</td><td class="n">0</td><td class="n">−π/2</td></tr>
+<tr><td>6</td><td class="n">q₆</td><td class="n">0.0996</td><td class="n">0</td><td class="n">0</td></tr>
+</table>
+<p>读表要点：</p>
+<ul>
+<li>关节 2、3、5 的轴是<b>平行</b>的（都水平），所以 a₂、a₃ 是上臂和前臂长度，且为负（x 轴方向的约定）。</li>
+<li>α = ±π/2 出现在相邻轴垂直处（1→2、4→5、5→6 前后）。</li>
+<li><b>零位验算</b>：q = 0 时末端位置应为 (a₂+a₃, −(d₄+d₆), d₁−d₅) = (−0.8172, −0.2329, 0.0628)。下面的交互里选 UR5e 点「零位」即可核对。</li>
+</ul>
+
+<h2 id="demo">7 交互：改关节角，看每一级坐标系</h2>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv" width="460" height="400"></canvas>
+    <div class="ctl">
+      <label>机型
+        <select id="robot"></select>
+        <button id="zero">零位</button>
+      </label>
+      <div id="sliders"></div>
+      <label>视角方位 <input type="range" id="az" min="-180" max="180" value="35"><span class="v" id="azv"></span></label>
+      <label>视角俯仰 <input type="range" id="el" min="-89" max="89" value="25"><span class="v" id="elv"></span></label>
+      <div class="legend"><span class="x">■ x</span><span class="y">■ y</span><span class="z">■ z</span><span>每个关节原点处画出 {i} 系；可拖动画布旋转</span></div>
+    </div>
+  </div>
+  <details open><summary>DH 表（可直接改 a / d / α，θ 偏置）</summary><div id="dhtable"></div></details>
+  <details open><summary>末端位姿 ⁰Tₙ</summary><pre class="m" id="tout"></pre></details>
+  <details><summary>逐级变换 ⁱ⁻¹Tᵢ</summary><pre class="m" id="steps"></pre></details>
+</div>
+
+<h2 id="pit">8 常见坑</h2>
+<table>
+<tr><th>现象</th><th>原因</th></tr>
+<tr><td>FK 结果整体差一个固定旋转 / 平移</td><td>手册给的是法兰盘系，没乘工具（TCP）变换；或末端 z 轴约定不同</td></tr>
+<tr><td>零位位置对，其他位形错</td><td>某个 α 符号错，或 θ 偏置（θ⁰）没加</td></tr>
+<tr><td>只有某些关节动时错</td><td>标准 / 改进 DH 混用；改进 DH 的 a、α 取成了本行而不是上一行</td></tr>
+<tr><td>单位错</td><td>手册 mm、度；代码 m、rad</td></tr>
+<tr><td>URDF 的 FK 与 DH 不一致</td><td>URDF 的 joint axis 是各自 link 系下的 +z/+x，零位朝向与 DH 的 x 轴放置不同，导致 θ 偏置；比较的是同一个<b>末端系</b>了吗</td></tr>
+<tr><td>相邻平行轴建表后 d、a 很怪</td><td>平行轴公垂线不唯一；只要 FK 数值一致就没有错</td></tr>
+</table>
+
+<h2 id="poe">9 与 PoE、URDF 的关系</h2>
+<table>
+<tr><th></th><th>DH</th><th>PoE（指数积）</th><th>URDF</th></tr>
+<tr><td>描述方式</td><td>每个关节 4 参数 + 坐标系约定</td><td>零位下每个关节的旋量 Sᵢ + 末端零位 M</td><td>每个 joint 的 origin（相对父 link）+ axis</td></tr>
+<tr><td>是否需要建局部系</td><td>是，且规则繁琐</td><td>否，只需一个空间系</td><td>是，但无 DH 那样的限制</td></tr>
+<tr><td>平行轴</td><td>病态</td><td>无问题</td><td>无问题</td></tr>
+<tr><td>谁在用</td><td>厂家手册、教科书</td><td>现代机器人学、Pinocchio 内部可转</td><td>ROS / MoveIt / Pinocchio 输入</td></tr>
+</table>
+<p>实务路径：<b>读手册用 DH，在 ROS 里用 URDF，用 PoE 验算</b>。三者 FK 必须一致，这就是 12 周计划 W1 的 gate。</p>
+
+<h2 id="check">10 自检</h2>
+<ol class="steps">
+<li>不看书写出标准 DH 的 4 个变换顺序与矩阵（θ 绕 z、d 沿 z、a 沿 x、α 绕 x）。</li>
+<li>解释：为什么标准 DH 里关节 i 的轴是 zᵢ₋₁，而改进 DH 是 zᵢ？</li>
+<li>给一张 2R 平面臂的图，建标准 DH 表，手算末端 (x, y) = (a₁c₁ + a₂c₁₂, a₁s₁ + a₂s₁₂)，与第 7 节「平面 2R」对照。</li>
+<li>用第 7 节 UR5e 在零位与 q = (0, −π/2, 0, −π/2, 0, 0) 验算，后者整条臂竖直向上，末端位置应为 (0, −0.2329, 1.0794)（z = d₁ + |a₂| + |a₃| + d₅）。</li>
+<li>改动一个 α 的符号，预测并观察 FK 如何出错，写下规律。</li>
+<li>把 UR5e 标准 DH 表转成改进 DH 表（每行 a、α 前移一行），验证 FK 不变。</li>
+</ol>
+
+<h3>参考</h3>
+<ul>
+<li>Lynch &amp; Park《Modern Robotics》第 4 章（PoE 为主，DH 在附录）；Siciliano《Robotics: Modelling, Planning and Control》第 2 章（标准 DH）；Craig《机器人学导论》第 3 章（改进 DH）。</li>
+<li>UR 官方 DH 参数页：Universal Robots 支持站点「DH Parameters for calculations of kinematics and dynamics」。</li>
+</ul>
+
+</main>
+
+<script>
+/* ===== 纯数学部分（供 node 验证，勿依赖 DOM） ===== */
+// MATH-BEGIN
+const I4 = () => [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]];
+const mul = (A,B) => A.map((r,i)=>B[0].map((_,j)=>r.reduce((s,_,k)=>s+A[i][k]*B[k][j],0)));
+function dhStd(th,d,a,al){
+  const c=Math.cos(th),s=Math.sin(th),ca=Math.cos(al),sa=Math.sin(al);
+  return [[c,-s*ca,s*sa,a*c],[s,c*ca,-c*sa,a*s],[0,sa,ca,d],[0,0,0,1]];
+}
+function fkChain(rows,q){
+  const Ts=[I4()], steps=[];
+  rows.forEach((r,i)=>{
+    const T=dhStd(q[i]+r.off,r.d,r.a,r.al);
+    steps.push(T); Ts.push(mul(Ts[i],T));
+  });
+  return {Ts,steps};
+}
+// MATH-END
+
+const R = {
+  "平面 2R":{rows:[{d:0,a:1.0,al:0,off:0},{d:0,a:0.8,al:0,off:0}],scale:1},
+  "平面 3R":{rows:[{d:0,a:1.0,al:0,off:0},{d:0,a:0.8,al:0,off:0},{d:0,a:0.5,al:0,off:0}],scale:1},
+  "UR5e（标准 DH）":{rows:[
+    {d:0.1625,a:0,al:Math.PI/2,off:0},{d:0,a:-0.425,al:0,off:0},{d:0,a:-0.3922,al:0,off:0},
+    {d:0.1333,a:0,al:Math.PI/2,off:0},{d:0.0997,a:0,al:-Math.PI/2,off:0},{d:0.0996,a:0,al:0,off:0}],scale:1}
+};
+const $ = id => document.getElementById(id);
+const sel=$("robot"), cv=$("cv"), ctx=cv.getContext("2d");
+Object.keys(R).forEach(k=>sel.add(new Option(k,k)));
+sel.value="UR5e（标准 DH）";
+let q=[], rows=[];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const f = (v,p=4)=>{const s=(Math.abs(v)<5e-10?0:v).toFixed(p);return s.padStart(p+4)};
+const fmt = T => T.map(r=>"⎢"+r.map(v=>f(v)).join(" ")+" ⎥").join("\n");
+const deg = r => (r*180/Math.PI).toFixed(1);
+
+function setup(){
+  rows = R[sel.value].rows.map(r=>({...r}));
+  q = rows.map(()=>0);
+  buildSliders(); buildTable(); draw();
+}
+function buildSliders(){
+  $("sliders").innerHTML = rows.map((_,i)=>
+    `<label>q${i+1}<input type="range" data-i="${i}" min="-180" max="180" step="1" value="${Math.round(q[i]*180/Math.PI)}"><span class="v" id="qv${i}">${deg(q[i])}°</span></label>`).join("");
+  $("sliders").querySelectorAll("input").forEach(el=>el.oninput=()=>{
+    const i=+el.dataset.i; q[i]=el.value*Math.PI/180; $("qv"+i).textContent=el.value+".0°"; draw();
+  });
+}
+function buildTable(){
+  $("dhtable").innerHTML = "<table><tr><th>i</th><th class='n'>θ偏置(°)</th><th class='n'>d</th><th class='n'>a</th><th class='n'>α(°)</th></tr>"+
+  rows.map((r,i)=>`<tr><td>${i+1}</td>
+   <td><input size=6 data-k="off" data-i="${i}" value="${deg(r.off)}"></td>
+   <td><input size=6 data-k="d" data-i="${i}" value="${r.d}"></td>
+   <td><input size=6 data-k="a" data-i="${i}" value="${r.a}"></td>
+   <td><input size=6 data-k="al" data-i="${i}" value="${deg(r.al)}"></td></tr>`).join("")+"</table>";
+  $("dhtable").querySelectorAll("input").forEach(el=>el.onchange=()=>{
+    const k=el.dataset.k,i=+el.dataset.i,v=parseFloat(el.value)||0;
+    rows[i][k]=(k==="off"||k==="al")?v*Math.PI/180:v; draw();
+  });
+}
+function project(p,az,el){
+  const ca=Math.cos(az),sa=Math.sin(az),ce=Math.cos(el),se=Math.sin(el);
+  const x1=ca*p[0]+sa*p[1], y1=-sa*p[0]+ca*p[1], z1=p[2];
+  return [x1, z1*ce - y1*se, y1*ce + z1*se];
+}
+function draw(){
+  const {Ts,steps}=fkChain(rows,q);
+  const az=$("az").value*Math.PI/180, el=$("el").value*Math.PI/180;
+  $("azv").textContent=$("az").value+"°"; $("elv").textContent=$("el").value+"°";
+  const reach=rows.reduce((s,r)=>s+Math.abs(r.a)+Math.abs(r.d),0)||1;
+  const k=Math.min(cv.width,cv.height)*0.36/reach, cx=cv.width/2, cy=cv.height*0.66;
+  const P=p=>{const v=project(p,az,el);return [cx+v[0]*k, cy-v[1]*k, v[2]]};
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.lineCap="round";
+  ctx.strokeStyle=css("--line"); ctx.lineWidth=1;
+  for(let g=-2;g<=2;g++){
+    const e=reach*g/2;
+    [[[e,-reach,0],[e,reach,0]],[[-reach,e,0],[reach,e,0]]].forEach(([a,b])=>{
+      const A=P(a),B=P(b);ctx.beginPath();ctx.moveTo(A[0],A[1]);ctx.lineTo(B[0],B[1]);ctx.stroke();
+    });
+  }
+  const org=Ts.map(T=>[T[0][3],T[1][3],T[2][3]]);
+  ctx.strokeStyle=css("--fg"); ctx.lineWidth=4;
+  ctx.beginPath(); org.forEach((p,i)=>{const s=P(p); i?ctx.lineTo(s[0],s[1]):ctx.moveTo(s[0],s[1])}); ctx.stroke();
+  const axLen=reach*0.12, cols=[css("--x"),css("--y"),css("--z")];
+  Ts.forEach((T,i)=>{
+    const o=P([T[0][3],T[1][3],T[2][3]]);
+    for(let c=0;c<3;c++){
+      const e=P([T[0][3]+axLen*T[0][c],T[1][3]+axLen*T[1][c],T[2][3]+axLen*T[2][c]]);
+      ctx.strokeStyle=cols[c]; ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(o[0],o[1]); ctx.lineTo(e[0],e[1]); ctx.stroke();
+    }
+    ctx.fillStyle=css("--fg"); ctx.beginPath(); ctx.arc(o[0],o[1],4,0,7); ctx.fill();
+    ctx.font="13px sans-serif"; ctx.fillText("{"+i+"}",o[0]+7,o[1]-7);
+  });
+  const T=Ts[Ts.length-1];
+  $("tout").textContent=fmt(T)+"\n\n位置 p = ("+f(T[0][3])+","+f(T[1][3])+","+f(T[2][3])+")";
+  $("steps").textContent=steps.map((S,i)=>`${i}T${i+1}\n`+fmt(S)).join("\n\n");
+}
+$("az").oninput=$("el").oninput=draw;
+$("robot").onchange=setup;
+$("zero").onclick=()=>{q=q.map(()=>0);buildSliders();draw()};
+let drag=null;
+cv.onpointerdown=e=>{drag=[e.clientX,e.clientY];cv.setPointerCapture(e.pointerId);cv.style.cursor="grabbing"};
+cv.onpointerup=()=>{drag=null;cv.style.cursor="grab"};
+cv.onpointermove=e=>{
+  if(!drag)return;
+  $("az").value=Math.max(-180,Math.min(180,+$("az").value+(e.clientX-drag[0])*0.5));
+  $("el").value=Math.max(-89,Math.min(89,+$("el").value+(e.clientY-drag[1])*0.5));
+  drag=[e.clientX,e.clientY]; draw();
+};
+setup();
+</script>
+</body>
+</html>
